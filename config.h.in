@@ -1,0 +1,6 @@
+#pragma once
+
+#define _GNU_SOURCE 1
+
+#define DATADIR "@DATADIR@"
+
