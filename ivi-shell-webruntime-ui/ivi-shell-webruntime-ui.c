@@ -39,6 +39,7 @@
 #include <sys/mman.h>
 #include <getopt.h>
 #include <errno.h>
+#include <sys/prctl.h>   /* PR_SET_PDEATHSIG */
 #include <wayland-cursor.h>
 #include <wayland-client-protocol.h>
 #include "shared/cairo-util.h"
@@ -305,6 +306,10 @@ execute_process(char *path, char *argv[])
     if (pid)
         return pid;
 
+    /* ---- Child process ---- */
+    /* Ensure child gets SIGTERM if parent dies. */
+    (void)prctl(PR_SET_PDEATHSIG, SIGTERM);
+
     if (-1 == execve(path, argv, environ)) {
         fprintf(stderr, "Failed to execve %s\n", path);
         fprintf(stderr, "Error: %s\n", strerror(errno));
@@ -312,6 +317,26 @@ execute_process(char *path, char *argv[])
     }
 
     return pid;
+}
+
+/* ---------- Child reaping & graceful kill ---------- */
+static void sigchld_handler(int signo)
+{
+    (void)signo;
+    int saved = errno;
+    /* Reap all exited children without blocking */
+    while (waitpid(-1, NULL, WNOHANG) > 0) { }
+    errno = saved;
+}
+
+static void install_sigchld_reaper(void)
+{
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = sigchld_handler;
+    sa.sa_flags   = SA_RESTART | SA_NOCLDSTOP;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGCHLD, &sa, NULL);
 }
 
 static int32_t
@@ -1260,6 +1285,16 @@ hmi_homescreen_setting_create(void)
     return setting;
 }
 
+static void disable_zombies(void)
+{
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = SIG_IGN;
+    sa.sa_flags = SA_NOCLDWAIT;   // Linux-specific but widely available
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGCHLD, &sa, NULL);
+}
+
 /**
  * Main thread
  *
@@ -1286,6 +1321,9 @@ int main(int argc, char **argv)
     struct hmi_homescreen_setting *hmi_setting;
     struct wlContextStruct *pWlCtxSt = NULL;
     int i = 0;
+
+    /* Install child reaper so our children never become zombies. */
+    install_sigchld_reaper();
 
     hmi_setting = hmi_homescreen_setting_create();
 
